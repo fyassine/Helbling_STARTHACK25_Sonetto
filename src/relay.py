@@ -8,17 +8,28 @@ from flask_sock import Sock
 from flask_cors import CORS
 from flasgger import Swagger
 
-from openai import OpenAI
+from groq import Groq
 import io
 
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
-OPENAI_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
-client = OpenAI(api_key=OPENAI_KEY)
+GROQ_KEY = "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"
+client = Groq(api_key="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")
 
-app = Flask(__name__)
-sock = Sock(app)
+# Handle HTTP requests & responses
+app = Flask(__name__) 
+
+# Handle WebSocket connections for real-time bidirectional communication between client & server
+# This is used for sending speech-to-text results back to clients in real-time
+sock = Sock(app) 
+
+# Enable Cross-Origin Resource Sharing (CORS) for the app 
+# This allows our API to be accessed from different domains/origins
+# Essential if the frontend is hosted on a different domain than the backend
 cors = CORS(app)
+
+# Initialize Swagger for API documentation
+# This generates API documentation based on the docstrings in the code
 swagger = Swagger(app)
 
 sessions = {}
@@ -27,7 +38,7 @@ def transcribe_whisper(audio_recording):
     audio_file = io.BytesIO(audio_recording)
     audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
     transcription = client.audio.transcriptions.create(
-        model="whisper-1",
+        model="whisper-large-v3",
         file=audio_file,
         #language = ""  # specify Language explicitly
     )
@@ -100,7 +111,7 @@ def open_session(chat_session_id):
         "audio_buffer": None,
         "chatSessionId": chat_session_id,
         "language": language,
-        "websocket": None  # will be set when the client connects via WS
+        "websocket": None  # will be set when the client connects via WS (WebSocket)
     }
 
     return jsonify({"session_id": session_id})
@@ -354,5 +365,5 @@ def get_memories(chat_session_id):
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=8098)
     
