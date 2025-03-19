@@ -11,9 +11,9 @@ from flasgger import Swagger
 from openai import OpenAI
 import io
 
-AZURE_SPEECH_KEY = "EluKF25JeWSKyiHCkO3tNPfJ4YSTehebrTKiTQEye7TqSuZs6RLoJQQJ99BBACI8hq2XJ3w3AAAYACOGe9dh"
+AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
-OPENAI_KEY = "sk-Czp5WvFa8zWm8LL1CgC74YZEa5bLNDCs2PT2KXjQzaT3BlbkFJ3RjItB0TigG3MJ0VHvwq6twg_qvzTFlXWnMnxkxqoA"
+OPENAI_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 client = OpenAI(api_key=OPENAI_KEY)
 
 app = Flask(__name__)

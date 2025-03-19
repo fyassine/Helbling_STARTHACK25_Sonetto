@@ -86,8 +86,9 @@ Optional webapp url parameters:
 
 [Deep Dive Slides](./DeepDiveSlides_Helbling.pdf)
 
-* Microsoft speech service: see keys in [relay.py](src/relay.py)
-* Azure OpenAI endpoint: see example code [openai_api_example.py](src/openai_api_example.py)
+* Microsoft speech key: https://starthack.eu/#/case-details?id=21, Case Description
+* Azure OpenAI endpoint: See https://starthack.eu/#/case-details?id=21, Case Description
+* Open source voice and transcription data: See for example https://github.com/google-deepmind/librispeech-long
 
 
 ### Generate swagger html docs
