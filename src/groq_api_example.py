@@ -1,8 +1,11 @@
 
 import os
 from groq import Groq
+from dotenv import load_dotenv
 
-client = Groq(api_key="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")
+load_dotenv()
+
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 filename = os.path.dirname(__file__) + "/audio.m4a"
 
 with open(filename, "rb") as file:

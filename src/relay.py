@@ -9,12 +9,13 @@ from flask_cors import CORS
 from flasgger import Swagger
 
 from groq import Groq
+from dotenv import load_dotenv
 import io
 
+load_dotenv()
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
-GROQ_KEY = "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"
-client = Groq(api_key="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")
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # Handle HTTP requests & responses
 app = Flask(__name__) 
