@@ -12,6 +12,10 @@ from groq import Groq
 from dotenv import load_dotenv
 import io
 
+from memory_module.summarize import summarize_conversation
+from memory_module.db import get_customer_profile, update_customer_data
+from memory_module.recommender import recommend
+
 load_dotenv()
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
@@ -43,7 +47,7 @@ def transcribe_whisper(audio_recording):
         file=audio_file,
         #language = ""  # specify Language explicitly
     )
-    print(f"openai transcription: {transcription.text}")
+    print(f"Transcription: {transcription.text}")
     return transcription.text
     
 # def transcribe_preview(session):
@@ -325,8 +329,12 @@ def set_memories(chat_session_id):
     chat_history = request.get_json()
     
     # TODO preprocess data (chat history & system message)
-    
-    print(f"{chat_session_id} extracting memories for conversation a:{chat_history[-1]['text']}")
+    speaker_chats = [item for item in chat_history if item['type'] == 0]
+    last_message = speaker_chats[-1]['text']
+    print(f"[SET MEMORIES] Last message is: {last_message}")
+    customer_data = get_customer_profile('Wissem')
+    new_data = summarize_conversation(last_message, customer_data)
+    update_customer_data('Wissem', new_data)
 
     return jsonify({"success": "1"})
 
@@ -361,7 +369,10 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories": "The guest typically orders menu 1 and a glass of sparkling water."})
+    profile = get_customer_profile("Wissem")
+    print(f"Profile got from 'Wissem' contains\n{profile}")
+    
+    return jsonify({"memories":"This is something I learned newly about this person"})
 
 
 if __name__ == "__main__":

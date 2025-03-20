@@ -3,8 +3,8 @@ import random
 from openai import OpenAI
 from dotenv import load_dotenv
 from groq import Groq
-from db import update_customer_data, get_customer_profile
-from recommender import recommend
+from memory_module.db import update_customer_data, get_customer_profile
+from memory_module.recommender import recommend
 
 load_dotenv()
 # client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -118,11 +118,12 @@ customer_taylor_interactions = [
 ]
 
 
-# random_sentence = random.choice(customer_alex_interactions)
-sentence = customer_jamie_interactions[8]
-print(f"The Chosen Prompt: {sentence}")
-# print(summarize_conversation(random_sentence))
-profile = get_customer_profile("Jamie")
-new_info = summarize_conversation(sentence, profile)
-print(f"Suggestion: {recommend(sentence, profile)}")
-update_customer_data("Jamie", new_info)
+# # random_sentence = random.choice(customer_alex_interactions)
+# # sentence = customer_jamie_interactions[4]
+# sentence = "Oh BTW I eat meat now, it's a new lifestyle that I want to try"
+# print(f"The Chosen Prompt: {sentence}")
+# # print(summarize_conversation(random_sentence))
+# profile = get_customer_profile("Jamie")
+# new_info = summarize_conversation(sentence, profile)
+# print(f"Suggestion: {recommend(sentence, profile)}")
+# update_customer_data("Jamie", new_info)
