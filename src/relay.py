@@ -366,5 +366,5 @@ def get_memories(chat_session_id):
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=8098)
+    app.run(debug=True, host="0.0.0.0", port=5000)
     
