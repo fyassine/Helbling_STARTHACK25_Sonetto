@@ -2,7 +2,7 @@ import uuid
 import json
 import os
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import azure.cognitiveservices.speech as speechsdk
 from flask_sock import Sock
 from flask_cors import CORS
@@ -11,6 +11,11 @@ from flasgger import Swagger
 from groq import Groq
 from dotenv import load_dotenv
 import io
+import numpy as np
+import wave
+from datetime import datetime
+from scipy import signal
+from pathlib import Path
 
 load_dotenv()
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
@@ -35,29 +40,42 @@ swagger = Swagger(app)
 
 sessions = {}
 
+# Create a directory to store processed audio samples
+SAMPLES_DIR = Path("processed_samples")
+SAMPLES_DIR.mkdir(exist_ok=True)
+
+def ensure_session_fields(session_data):
+    """
+    Ensure that a session has all the required fields.
+    If any field is missing, it will be added with a default value.
+    """
+    required_fields = {
+        "audio_buffer": None,
+        "original_audio_path": None,
+        "processed_audio_path": None,
+        "websocket": None
+    }
+    
+    for field, default_value in required_fields.items():
+        if field not in session_data:
+            session_data[field] = default_value
+    
+    return session_data
+
 def transcribe_whisper(audio_recording):
     audio_file = io.BytesIO(audio_recording)
     audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
-    transcription = client.audio.transcriptions.create(
-        model="whisper-large-v3",
-        file=audio_file,
-        #language = ""  # specify Language explicitly
-    )
-    print(f"openai transcription: {transcription.text}")
-    return transcription.text
-    
-# def transcribe_preview(session):
-#     if session["audio_buffer"] is not None:
-#         text = transcribe_whisper(session["audio_buffer"])
-#         # send transcription
-#         ws = session.get("websocket")
-#         if ws:
-#             message = {
-#                 "event": "recognizing",
-#                 "text": text,
-#                 "language": session["language"]
-#             }
-#             ws.send(json.dumps(message))
+    try:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-large-v3",
+            file=audio_file,
+            #language = ""  # specify Language explicitly
+        )
+        # print(f"openai transcription: {transcription.text}")
+        return transcription.text
+    except Exception as e:
+        print(f"Error during Groq API call: {str(e)}")
+        return "Transcription failed due to connection error"
 
 @app.route("/chats/<chat_session_id>/sessions", methods=["POST"])
 def open_session(chat_session_id):
@@ -112,11 +130,15 @@ def open_session(chat_session_id):
         "audio_buffer": None,
         "chatSessionId": chat_session_id,
         "language": language,
-        "websocket": None  # will be set when the client connects via WS (WebSocket)
+        "websocket": None,  # will be set when the client connects via WS (WebSocket)
+        "original_audio_path": None,
+        "processed_audio_path": None
     }
+    
+    # print(f"DEBUG - Created session: {session_id}")
+    # print(f"DEBUG - Session object: {sessions[session_id]}")
 
     return jsonify({"session_id": session_id})
-
 
 @app.route("/chats/<chat_session_id>/sessions/<session_id>/wav", methods=["POST"])
 def upload_audio_chunk(chat_session_id, session_id):
@@ -165,17 +187,142 @@ def upload_audio_chunk(chat_session_id, session_id):
     if session_id not in sessions:
         return jsonify({"error": "Session not found"}), 404
 
-    audio_data = request.get_data()  # raw binary data from the POST body
-
+    # Ensure session has all required fields
+    sessions[session_id] = ensure_session_fields(sessions[session_id])
+    
+    audio_data = request.get_data()  # raw binary data
+    print(f"Received audio chunk: {len(audio_data)} bytes")
+    
+    # Store original audio for comparison
+    if not sessions[session_id].get("original_audio_path"):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_filename = f"{SAMPLES_DIR}/original_{session_id}_{timestamp}.wav"
+        sessions[session_id]["original_audio_path"] = original_filename
+        
+        # Initialize the original audio file with WAV header
+        with wave.open(original_filename, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit audio
+            wf.setframerate(16000)  # Assuming 16kHz sampling rate
+            wf.writeframes(b'')  # Empty frames initially
+    
+    # Append original audio to the file
+    original_audio_path = sessions[session_id].get("original_audio_path")
+    if original_audio_path:
+        # Read existing audio data
+        existing_audio = b''
+        try:
+            with wave.open(original_audio_path, 'rb') as wf:
+                params = wf.getparams()
+                existing_audio = wf.readframes(wf.getnframes())
+                print(f"Original audio: existing frames: {len(existing_audio)} bytes")
+        except (FileNotFoundError, wave.Error):
+            # If file doesn't exist or is empty, create a new one
+            params = (1, 2, 16000, 0, 'NONE', 'not compressed')
+            print("Creating new original audio file")
+        
+        print(f"New audio chunk size: {len(audio_data)} bytes")
+        
+        # Write combined audio data
+        with wave.open(original_audio_path, 'wb') as wf:
+            wf.setparams(params)
+            combined_audio = existing_audio + audio_data
+            print(f"Combined audio size: {len(combined_audio)} bytes")
+            wf.writeframes(combined_audio)
+    
+    # Convert bytes to numpy array
+    audio_array = np.frombuffer(audio_data, dtype=np.int16)
+    
+    # Normalize to float
+    audio_normalized = audio_array.astype(np.float32) / 32768.0
+    
+    # Initialize processing functions if first chunk
+    if not hasattr(upload_audio_chunk, "noise_profile"):
+        upload_audio_chunk.noise_profile = None
+    
+    # Apply preprocessing pipeline
+    has_speech, processed_audio = simple_vad(audio_normalized, threshold=0.015)
+    
+    # Always store the original audio data in the buffer, even if no speech is detected
     if sessions[session_id]["audio_buffer"] is not None:
+        print(f"Existing audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
         sessions[session_id]["audio_buffer"] = sessions[session_id]["audio_buffer"] + audio_data
+        print(f"Updated audio buffer size (original): {len(sessions[session_id]['audio_buffer'])} bytes")
     else:
+        print(f"Initializing audio buffer with original audio: {len(audio_data)} bytes")
         sessions[session_id]["audio_buffer"] = audio_data
-
-    # TODO optionally transcribe real time audio chunks, see transcribe_preview()
-
-    return jsonify({"status": "audio_chunk_received"})
-
+    
+    # Process audio for noise reduction regardless of speech detection
+    # This ensures we have processed audio for all chunks
+    processed_audio = audio_normalized  # Default to original if no speech detected
+    
+    if has_speech and processed_audio is not None:
+        processed_audio = automatic_gain_control(processed_audio)
+        try:
+            processed_audio = adaptive_noise_reduction(processed_audio, 
+                                                   noise_profile=upload_audio_chunk.noise_profile)
+            upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
+            processed_audio = spectral_enhancement(processed_audio)
+        except Exception as e:
+            print(f"Error during audio processing: {str(e)}")
+            # Fall back to original audio if processing fails
+            processed_audio = audio_normalized
+    
+    # Convert back to int16 for storage
+    processed_int16 = (processed_audio * 32768).astype(np.int16)
+    processed_bytes = processed_int16.tobytes()
+    
+    # Always save processed audio to file, regardless of speech detection
+    # Also save processed audio to a separate file for testing
+    if not sessions[session_id].get("processed_audio_path"):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        processed_filename = f"{SAMPLES_DIR}/processed_{session_id}_{timestamp}.wav"
+        sessions[session_id]["processed_audio_path"] = processed_filename
+        
+        # Initialize the processed audio file with WAV header
+        with wave.open(processed_filename, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit audio
+            wf.setframerate(16000)
+            wf.writeframes(processed_bytes)
+    else:
+        # Append processed audio to the file
+        processed_audio_path = sessions[session_id].get("processed_audio_path")
+        if processed_audio_path:
+            # Read existing audio data
+            existing_audio = b''
+            try:
+                with wave.open(processed_audio_path, 'rb') as wf:
+                    params = wf.getparams()
+                    existing_audio = wf.readframes(wf.getnframes())
+                    print(f"Processed audio: existing frames: {len(existing_audio)} bytes")
+            except (FileNotFoundError, wave.Error):
+                # If file doesn't exist or is empty, create a new one
+                params = (1, 2, 16000, 0, 'NONE', 'not compressed')
+                print("Creating new processed audio file")
+            
+            print(f"New processed audio chunk size: {len(processed_bytes)} bytes")
+            
+            # Write combined audio data
+            with wave.open(processed_audio_path, 'wb') as wf:
+                wf.setparams(params)
+                combined_audio = existing_audio + processed_bytes
+                print(f"Combined processed audio size: {len(combined_audio)} bytes")
+                wf.writeframes(combined_audio)
+    
+    # Get file paths for response
+    original_audio_path = sessions[session_id].get("original_audio_path")
+    processed_audio_path = sessions[session_id].get("processed_audio_path")
+    
+    original_audio = os.path.basename(original_audio_path) if original_audio_path else ""
+    processed_audio = os.path.basename(processed_audio_path) if processed_audio_path else ""
+    
+    # Return the paths to audio files along with status
+    return jsonify({
+        "status": "audio_chunk_received",
+        "original_audio": original_audio,
+        "processed_audio": processed_audio
+    })
 
 @app.route("/chats/<chat_session_id>/sessions/<session_id>", methods=["DELETE"])
 def close_session(chat_session_id, session_id):
@@ -217,25 +364,51 @@ def close_session(chat_session_id, session_id):
     if session_id not in sessions:
         return jsonify({"error": "Session not found"}), 404
 
+    # Ensure session has all required fields
+    sessions[session_id] = ensure_session_fields(sessions[session_id])
+        
+    # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
-        # TODO preprocess audio/text, extract and save speaker identification
-
-        text = transcribe_whisper(sessions[session_id]["audio_buffer"])
-        # send transcription
-        ws = sessions[session_id].get("websocket")
-        if ws:
-          message = {
-              "event": "recognized",
-              "text": text,
-              "language": sessions[session_id]["language"]
-          }
-          ws.send(json.dumps(message))
+        print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
+        try:
+            text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+            # send transcription
+            ws = sessions[session_id].get("websocket")
+            if ws:
+                message = {
+                    "event": "recognized",
+                    "text": text,
+                    "language": sessions[session_id]["language"]
+                }
+                ws.send(json.dumps(message))
+        except Exception as e:
+            print(f"Error during transcription: {str(e)}")
+            # Continue with session closing even if transcription fails
     
-    # # Remove from session store
+    # Get file paths before removing session
+    original_audio_path = sessions[session_id].get("original_audio_path")
+    processed_audio_path = sessions[session_id].get("processed_audio_path")
+    
+    # Handle None values
+    if original_audio_path is None:
+        original_audio = ""
+    else:
+        original_audio = os.path.basename(original_audio_path)
+        
+    if processed_audio_path is None:
+        processed_audio = ""
+    else:
+        processed_audio = os.path.basename(processed_audio_path)
+    
+    # Remove from session store
     sessions.pop(session_id, None)
 
-    return jsonify({"status": "session_closed"})
-
+    return jsonify({
+        "status": "session_closed",
+        "original_audio": original_audio,
+        "processed_audio": processed_audio,
+        "message": "Audio files can be accessed at /samples/{filename}"
+    })
 
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
@@ -270,6 +443,9 @@ def speech_socket(ws, chat_session_id, session_id):
         ws.send(json.dumps({"error": "Session not found"}))
         return
 
+    # Ensure session has all required fields
+    sessions[session_id] = ensure_session_fields(sessions[session_id])
+    
     # Store the websocket reference in the session
     sessions[session_id]["websocket"] = ws
 
@@ -363,8 +539,181 @@ def get_memories(chat_session_id):
     # TODO load relevant memories from your database. Example return value:
     return jsonify({"memories": "The guest typically orders menu 1 and a glass of sparkling water."})
 
+def simple_vad(audio_chunk, threshold=0.015, frame_duration=0.02):
+    """
+    Simple voice activity detection based on energy threshold.
+    Returns True and the audio chunk if speech is detected, False and None otherwise.
+    """
+    if len(audio_chunk) < 10:  # Skip if chunk is too small
+        return False, None
+        
+    # Calculate short-time energy
+    frame_length = max(int(frame_duration * 16000), 1)  # Assuming 16kHz sampling rate
+    frames = []
+    for i in range(0, len(audio_chunk) - frame_length, frame_length):
+        frames.append(audio_chunk[i:i+frame_length])
+    
+    if not frames:  # If no frames could be created
+        return False, None
+        
+    frames = np.array(frames)
+    energy = np.sum(frames**2, axis=1) / frame_length
+    
+    # Apply threshold
+    speech_frames = energy > threshold
+    
+    speech_percentage = np.mean(speech_frames) * 100
+    print(f"Speech detection: {speech_percentage:.2f}% of frames have speech (threshold: {threshold})")
+    
+    # Only process if speech is detected
+    if np.mean(speech_frames) > 0.05:  # At least 5% of frames have speech
+        print(f"Speech detected: returning {len(audio_chunk)} bytes")
+        return True, audio_chunk
+    else:
+        print(f"No speech detected: discarding {len(audio_chunk)} bytes")
+        return False, None
+
+def automatic_gain_control(audio_chunk, target_level=-15, time_constant=0.1):
+    """
+    Automatic gain control to normalize audio volume.
+    """
+    if len(audio_chunk) == 0:
+        return audio_chunk
+        
+    # Convert to decibels
+    current_level = 20 * np.log10(np.maximum(np.sqrt(np.mean(audio_chunk**2)), 1e-10))
+    
+    # Calculate gain needed
+    gain_db = target_level - current_level
+    
+    # Limit maximum gain to prevent noise amplification
+    gain_db = min(gain_db, 20)
+    
+    # Convert back to linear gain
+    gain = 10 ** (gain_db / 20)
+    
+    # Apply gain
+    return audio_chunk * gain
+
+def adaptive_noise_reduction(audio_chunk, alpha=0.95, noise_profile=None):
+    """
+    Adaptive noise reduction using spectral subtraction.
+    """
+    if len(audio_chunk) < 10:  # Skip if chunk is too small
+        return audio_chunk
+        
+    # FFT to frequency domain
+    spec = np.fft.rfft(audio_chunk)
+    mag = np.abs(spec)
+    phase = np.angle(spec)
+    
+    # Initialize or update noise profile
+    if noise_profile is None:
+        adaptive_noise_reduction.noise_profile = mag
+    else:
+        # Make sure the noise profile has the same shape as the current magnitude
+        if len(noise_profile) != len(mag):
+            print(f"Noise profile shape mismatch: {len(noise_profile)} vs {len(mag)}")
+            # Resize noise profile to match current magnitude
+            if len(noise_profile) > len(mag):
+                noise_profile = noise_profile[:len(mag)]
+            else:
+                # Pad with zeros
+                noise_profile = np.pad(noise_profile, (0, len(mag) - len(noise_profile)))
+        
+        adaptive_noise_reduction.noise_profile = noise_profile
+        # Update noise profile with a smoothing factor
+        adaptive_noise_reduction.noise_profile = alpha * adaptive_noise_reduction.noise_profile + (1 - alpha) * mag
+    
+    # Perform spectral subtraction
+    mag_subtracted = np.maximum(mag - adaptive_noise_reduction.noise_profile * 0.5, 0.01 * mag)
+    
+    # Reconstruct signal
+    enhanced = np.fft.irfft(mag_subtracted * np.exp(1j * phase))
+    
+    # Ensure output length matches input length
+    if len(enhanced) > len(audio_chunk):
+        enhanced = enhanced[:len(audio_chunk)]
+    elif len(enhanced) < len(audio_chunk):
+        enhanced = np.pad(enhanced, (0, len(audio_chunk) - len(enhanced)))
+    
+    return enhanced
+
+def spectral_enhancement(audio_chunk, sampling_rate=16000):
+    """
+    Enhance speech frequencies while attenuating others.
+    """
+    if len(audio_chunk) < 10:  # Skip if chunk is too small
+        return audio_chunk
+        
+    # Define speech-relevant frequency bands (300-3400 Hz for typical speech)
+    low_freq = 300
+    high_freq = 3400
+    
+    # Convert to frequency domain
+    spec = np.fft.rfft(audio_chunk)
+    freq = np.fft.rfftfreq(len(audio_chunk), 1/sampling_rate)
+    
+    # Create a bandpass filter that emphasizes speech frequencies
+    gain = np.ones_like(freq)
+    gain[freq < low_freq] = 0.1  # Attenuate low frequencies
+    gain[freq > high_freq] = 0.1  # Attenuate high frequencies
+    
+    # Apply gain to middle frequencies (speech range)
+    speech_mask = (freq >= low_freq) & (freq <= high_freq)
+    gain[speech_mask] = 1.5  # Boost speech frequencies
+    
+    # Apply filter
+    enhanced_spec = spec * gain
+    
+    # Convert back to time domain
+    enhanced = np.fft.irfft(enhanced_spec)
+    
+    # Ensure output length matches input length
+    if len(enhanced) > len(audio_chunk):
+        enhanced = enhanced[:len(audio_chunk)]
+    elif len(enhanced) < len(audio_chunk):
+        enhanced = np.pad(enhanced, (0, len(audio_chunk) - len(enhanced)))
+    
+    return enhanced
+
+# Add an endpoint to retrieve the audio files
+@app.route("/samples/<filename>", methods=["GET"])
+def get_audio_sample(filename):
+    """
+    Retrieve a saved audio sample file.
+    ---
+    tags:
+      - Samples
+    parameters:
+      - name: filename
+        in: path
+        type: string
+        required: true
+        description: Name of the audio sample file
+    responses:
+      200:
+        description: Audio file
+        content:
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+      404:
+        description: File not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+              description: Error message
+    """
+    file_path = SAMPLES_DIR / filename
+    if not file_path.exists():
+        return jsonify({"error": "File not found"}), 404
+    
+    return send_file(str(file_path), mimetype="audio/wav")
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=8098)
-    
+    app.run(debug=True, host="0.0.0.0", port=5000)
