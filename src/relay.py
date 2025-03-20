@@ -39,6 +39,8 @@ swagger = Swagger(app)
 
 sessions = {}
 
+last_message = ""
+
 def transcribe_whisper(audio_recording):
     audio_file = io.BytesIO(audio_recording)
     audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
@@ -332,9 +334,9 @@ def set_memories(chat_session_id):
     speaker_chats = [item for item in chat_history if item['type'] == 0]
     last_message = speaker_chats[-1]['text']
     print(f"[SET MEMORIES] Last message is: {last_message}")
-    customer_data = get_customer_profile('Wissem')
+    customer_data = get_customer_profile('Ahmed')
     new_data = summarize_conversation(last_message, customer_data)
-    update_customer_data('Wissem', new_data)
+    update_customer_data('Ahmed', new_data)
 
     return jsonify({"success": "1"})
 
@@ -369,13 +371,10 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    profile = get_customer_profile("Wissem")
-    print(f"Profile got from 'Wissem' contains\n{profile}")
-    
-    return jsonify({"memories":"This is something I learned newly about this person"})
+    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))}"})
 
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=8098)
     
