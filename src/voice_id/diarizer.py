@@ -4,6 +4,7 @@ import json
 import time
 import azure.cognitiveservices.speech as speechsdk
 from flask import jsonify
+import groq
 
 # Import will happen at runtime to avoid circular imports
 # from relay import sessions, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION
@@ -156,6 +157,7 @@ def pick_relevant_speaker(audio_file_path, session_id=None):
         Text to analyze: {combined_text}"""
         
         try:
+            client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
             completion = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="llama-3.3-70b-versatile",
