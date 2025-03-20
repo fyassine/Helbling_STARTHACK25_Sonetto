@@ -9,7 +9,7 @@ import tempfile
 import time
 import wave
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_sock import Sock
 from flask_cors import CORS
 from flasgger import Swagger
@@ -27,10 +27,28 @@ from audio_processing.preprocess import (
     spectral_enhancement
 )
 
+import wave
+import numpy as np
+from datetime import datetime
+import groq
+from pathlib import Path
+
+# Import preprocessing functions
+from audio_processing.preprocess import (
+    simple_vad, 
+    automatic_gain_control, 
+    adaptive_noise_reduction, 
+    spectral_enhancement
+)
+
+from memory_module.summarize import summarize_conversation
+from memory_module.db import get_customer_profile, update_customer_data
+from memory_module.recommender import recommend
+
 load_dotenv()
 AZURE_SPEECH_KEY = os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = "switzerlandnorth"
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # Handle HTTP requests & responses
 app = Flask(__name__) 
@@ -49,6 +67,30 @@ cors = CORS(app)
 swagger = Swagger(app)
 
 sessions = {}
+
+last_message = ""
+
+# Create a directory to store processed audio samples
+SAMPLES_DIR = Path("processed_samples")
+SAMPLES_DIR.mkdir(exist_ok=True)
+
+def ensure_session_fields(session_data):
+    """
+    Ensure that a session has all the required fields.
+    If any field is missing, it will be added with a default value.
+    """
+    required_fields = {
+        "audio_buffer": None,
+        "original_audio_path": None,
+        "processed_audio_path": None,
+        "websocket": None
+    }
+    
+    for field, default_value in required_fields.items():
+        if field not in session_data:
+            session_data[field] = default_value
+    
+    return session_data
 
 # Create a directory to store processed audio samples
 SAMPLES_DIR = Path("processed_samples")
@@ -75,6 +117,17 @@ def ensure_session_fields(session_data):
 def transcribe_whisper(audio_recording):
     audio_file = io.BytesIO(audio_recording)
     audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
+    try:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-large-v3",
+            file=audio_file,
+            #language = ""  # specify Language explicitly
+        )
+        # print(f"openai transcription: {transcription.text}")
+        return transcription.text
+    except Exception as e:
+        print(f"Error during Groq API call: {str(e)}")
+        return "Transcription failed due to connection error"
     try:
         transcription = client.audio.transcriptions.create(
             model="whisper-large-v3",
@@ -339,10 +392,6 @@ def upload_audio_chunk(chat_session_id, session_id):
                 combined_audio = existing_audio + processed_bytes
                 print(f"Combined processed audio size: {len(combined_audio)} bytes")
                 wf.writeframes(combined_audio)
-                
-            # Don't overwrite the original audio buffer with processed audio
-            # We want to keep the original audio for later processing
-            # sessions[session_id]["audio_buffer"] = combined_audio
     
     # Get file paths for response
     original_audio_path = sessions[session_id].get("original_audio_path")
@@ -357,7 +406,6 @@ def upload_audio_chunk(chat_session_id, session_id):
         "original_audio": original_audio,
         "processed_audio": processed_audio
     })
-
 
 @app.route("/chats/<chat_session_id>/sessions/<session_id>", methods=["DELETE"])
 def close_session(chat_session_id, session_id):
@@ -631,6 +679,9 @@ def speech_socket(ws, chat_session_id, session_id):
         ws.send(json.dumps({"error": "Session not found"}))
         return
 
+    # Ensure session has all required fields
+    sessions[session_id] = ensure_session_fields(sessions[session_id])
+    
     # Store the websocket reference in the session
     sessions[session_id]["websocket"] = ws
 
@@ -686,8 +737,12 @@ def set_memories(chat_session_id):
     chat_history = request.get_json()
     
     # TODO preprocess data (chat history & system message)
-    
-    print(f"{chat_session_id} extracting memories for conversation a:{chat_history[-1]['text']}")
+    speaker_chats = [item for item in chat_history if item['type'] == 0]
+    last_message = speaker_chats[-1]['text']
+    print(f"[SET MEMORIES] Last message is: {last_message}")
+    customer_data = get_customer_profile('Ahmed')
+    new_data = summarize_conversation(last_message, customer_data)
+    update_customer_data('Ahmed', new_data)
 
     return jsonify({"success": "1"})
 
@@ -722,9 +777,45 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories": "The guest typically orders menu 1 and a glass of sparkling water."})
+    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))}"})
 
+# Add an endpoint to retrieve the audio files
+@app.route("/samples/<filename>", methods=["GET"])
+def get_audio_sample(filename):
+    """
+    Retrieve a saved audio sample file.
+    ---
+    tags:
+      - Samples
+    parameters:
+      - name: filename
+        in: path
+        type: string
+        required: true
+        description: Name of the audio sample file
+    responses:
+      200:
+        description: Audio file
+        content:
+          audio/wav:
+            schema:
+              type: string
+              format: binary
+      404:
+        description: File not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+              description: Error message
+    """
+    file_path = SAMPLES_DIR / filename
+    if not file_path.exists():
+        return jsonify({"error": "File not found"}), 404
+    
+    return send_from_directory(str(SAMPLES_DIR), filename, mimetype="audio/wav")
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=8098)
+    app.run(debug=True, host="0.0.0.0", port=5000)
