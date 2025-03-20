@@ -1,17 +1,22 @@
-import json
 import uuid
-import io
+import json
 import os
+
+from flask import Flask, request, jsonify, send_from_directory
+import azure.cognitiveservices.speech as speechsdk
+from flask_sock import Sock
+from flask_cors import CORS
+from flasgger import Swagger
+
+from groq import Groq
+from dotenv import load_dotenv
+import io
+
 import wave
 import numpy as np
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from flask_sock import Sock
 import groq
-from dotenv import load_dotenv
 from pathlib import Path
-from flasgger import Swagger
 
 # Import preprocessing functions
 from preprocess import (
@@ -139,15 +144,16 @@ def open_session(chat_session_id):
         "processed_audio_path": None
     }
     
-    # print(f"DEBUG - Created session: {session_id}")
-    # print(f"DEBUG - Session object: {sessions[session_id]}")
+    print(f"DEBUG - Created session: {session_id}")
+    print(f"DEBUG - Session object: {sessions[session_id]}")
 
     return jsonify({"session_id": session_id})
 
-@app.route('/chats/<chat_session_id>/sessions/<session_id>/wav', methods=['POST'])
+@app.route("/chats/<chat_session_id>/sessions/<session_id>/wav", methods=["POST"])
 def upload_audio_chunk(chat_session_id, session_id):
     """
-    Upload a chunk of audio data.
+    Upload an audio chunk (expected 16kb, ~0.5s of WAV data).
+    The chunk is appended to the push stream for the session.
     ---
     tags:
       - Audio
