@@ -31,7 +31,7 @@ from memory_module.db import get_customer_profile, update_customer_data
 from memory_module.recommender import recommend
 
 load_dotenv()
-AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
+AZURE_SPEECH_KEY=os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = "switzerlandnorth"
 client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -78,9 +78,18 @@ def ensure_session_fields(session_data):
     return session_data
 
 def transcribe_whisper(audio_recording):
-    audio_file = io.BytesIO(audio_recording)
-    audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
     try:
+        # Check if input is a file path or raw audio data
+        if isinstance(audio_recording, str) and os.path.exists(audio_recording):
+            # Input is a file path
+            with open(audio_recording, 'rb') as f:
+                audio_file = io.BytesIO(f.read())
+                audio_file.name = os.path.basename(audio_recording)
+        else:
+            # Input is raw audio data
+            audio_file = io.BytesIO(audio_recording)
+            audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
+            
         transcription = client.audio.transcriptions.create(
             model="whisper-large-v3",
             file=audio_file,
@@ -284,11 +293,16 @@ def upload_audio_chunk(chat_session_id, session_id):
     # Process audio for noise reduction
     if processed_audio is not None:
         try:
+            # Keep track of if this is the first or last chunk
+            is_first_chunk = not sessions[session_id].get("processed_audio_path")
+            
             processed_audio = automatic_gain_control(processed_audio)
             processed_audio = adaptive_noise_reduction(processed_audio, 
                                                    noise_profile=upload_audio_chunk.noise_profile)
             upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
             processed_audio = spectral_enhancement(processed_audio)
+            
+            # No silence buffer added to regular chunks to avoid choppiness
         except Exception as e:
             print(f"Error during audio processing: {str(e)}")
             # Fall back to original audio if processing fails
@@ -405,24 +419,63 @@ def close_session(chat_session_id, session_id):
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
         print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
+        
+        # Add a tail buffer to the final processed audio file to prevent voice cutoff
+        processed_audio_path = sessions[session_id].get("processed_audio_path")
+        if processed_audio_path:
+            try:
+                # Read the processed audio file
+                with wave.open(processed_audio_path, 'rb') as wf:
+                    params = wf.getparams()
+                    existing_audio = wf.readframes(wf.getnframes())
+                
+                # Add a 0.5 second silence buffer at the end
+                tail_buffer_size = int(0.5 * 16000)  # 500ms at 16kHz
+                tail_buffer = np.zeros(tail_buffer_size, dtype=np.int16).tobytes()
+                
+                # Write combined audio with tail buffer
+                with wave.open(processed_audio_path, 'wb') as wf:
+                    wf.setparams(params)
+                    wf.writeframes(existing_audio + tail_buffer)
+                    print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
+            except Exception as e:
+                print(f"Error adding tail buffer: {str(e)}")
+        
         try:
-            text = transcribe_whisper(sessions[session_id]["audio_buffer"])
-            # send transcription
-            ws = sessions[session_id].get("websocket")
-            if ws:
-                message = {
-                    "event": "recognized",
-                    "text": text,
-                    "language": sessions[session_id]["language"]
-                }
-                ws.send(json.dumps(message))
+            # Use processed audio file if available, otherwise fall back to audio buffer
+            processed_audio_path = sessions[session_id].get("processed_audio_path")
+
+            # Use pick_relevant_speaker from diarizer.py to get the speaker who is talking to us
+            from diarizer import pick_relevant_speaker
+
+            if processed_audio_path and os.path.exists(processed_audio_path):
+                print(f"Using processed audio file for speaker diarization: {processed_audio_path}")
+                # Call pick_relevant_speaker with the processed audio path and session_id
+                relevant_speaker = pick_relevant_speaker(processed_audio_path, session_id)
+                
+                # Store the relevant speaker information in the session
+                if relevant_speaker:
+                    sessions[session_id]["relevant_speaker"] = relevant_speaker
+                    print(f"Relevant speaker identified and stored in session")
+                
+                # Get the websocket to send the transcription back to the client
+                ws = sessions[session_id].get("websocket")
+                if ws and relevant_speaker:
+                    # The pick_relevant_speaker function already sends the message via websocket
+                    # We don't need to send it again here
+                    print(f"Relevant speaker identified and message sent via websocket")
+            else:
+                print("Processed audio file not available, cannot perform speaker diarization")
         except Exception as e:
-            print(f"Error during transcription: {str(e)}")
-            # Continue with session closing even if transcription fails
+            print(f"Error during speaker diarization: {str(e)}")
+
     
     # Get file paths before removing session
     original_audio_path = sessions[session_id].get("original_audio_path")
     processed_audio_path = sessions[session_id].get("processed_audio_path")
+    
+    # Store the relevant speaker information if it was found
+    relevant_speaker_info = sessions[session_id].get("relevant_speaker")
     
     # Handle None values
     if original_audio_path is None:
@@ -438,12 +491,18 @@ def close_session(chat_session_id, session_id):
     # Remove from session store
     sessions.pop(session_id, None)
 
-    return jsonify({
+    response = {
         "status": "session_closed",
         "original_audio": original_audio,
         "processed_audio": processed_audio,
         "message": "Audio files can be accessed at /samples/{filename}"
-    })
+    }
+    
+    # Add relevant speaker information if available
+    if relevant_speaker_info:
+        response["relevant_speaker"] = relevant_speaker_info
+        
+    return jsonify(response)
 
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
