@@ -144,14 +144,13 @@ def open_session(chat_session_id):
 
     return jsonify({"session_id": session_id})
 
-@app.route("/chats/<chat_session_id>/sessions/<session_id>/wav", methods=["POST"])
+@app.route('/chats/<chat_session_id>/sessions/<session_id>/wav', methods=['POST'])
 def upload_audio_chunk(chat_session_id, session_id):
     """
-    Upload an audio chunk (expected 16kb, ~0.5s of WAV data).
-    The chunk is appended to the push stream for the session.
+    Upload a chunk of audio data.
     ---
     tags:
-      - Sessions
+      - Audio
     parameters:
       - name: chat_session_id
         in: path
@@ -162,59 +161,63 @@ def upload_audio_chunk(chat_session_id, session_id):
         in: path
         type: string
         required: true
-        description: ID of the voice input session
+        description: The unique identifier of the session.
       - name: audio_chunk
         in: body
         required: true
-        schema:
-          type: string
-          format: binary
-          description: Raw WAV audio data
+        description: The audio chunk data to upload.
     responses:
       200:
-        description: Audio chunk received successfully
+        description: Audio chunk uploaded successfully.
         schema:
           type: object
           properties:
-            status:
+            original_audio:
               type: string
-              description: Status message
-      404:
-        description: Session not found
-        schema:
-          type: object
-          properties:
-            error:
+              description: Path to the original audio file.
+            processed_audio:
               type: string
-              description: Description of the error
+              description: Path to the processed audio file.
+      400:
+        description: Invalid request data.
     """
+    # Check if session exists
     if session_id not in sessions:
-        return jsonify({"error": "Session not found"}), 404
-
+        # Initialize session if it doesn't exist
+        print(f"Initializing new session: {session_id}")
+        sessions[session_id] = {}
+    
     # Ensure session has all required fields
     sessions[session_id] = ensure_session_fields(sessions[session_id])
     
-    audio_data = request.get_data()  # raw binary data
+    # Get audio data from request
+    audio_data = request.data
     print(f"Received audio chunk: {len(audio_data)} bytes")
     
-    # Store original audio for comparison
+    if len(audio_data) == 0:
+        return jsonify({"error": "Empty audio data"}), 400
+    
+    # Check if this is the first chunk
+    is_first_chunk = not sessions[session_id].get("original_audio_path")
+    
+    # Save original audio to file
     if not sessions[session_id].get("original_audio_path"):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         original_filename = f"{SAMPLES_DIR}/original_{session_id}_{timestamp}.wav"
         sessions[session_id]["original_audio_path"] = original_filename
         
-        # Initialize the original audio file with WAV header
+        # Initialize the file with WAV header
         with wave.open(original_filename, 'wb') as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)  # 16-bit audio
             wf.setframerate(16000)  # Assuming 16kHz sampling rate
-            wf.writeframes(b'')  # Empty frames initially
-    
-    # Append original audio to the file
-    original_audio_path = sessions[session_id].get("original_audio_path")
-    if original_audio_path:
-        # Read existing audio data
+            wf.writeframes(audio_data)
+    else:
+        # Append to existing file
+        original_audio_path = sessions[session_id].get("original_audio_path")
         existing_audio = b''
+        params = None
+        
         try:
             with wave.open(original_audio_path, 'rb') as wf:
                 params = wf.getparams()
@@ -243,11 +246,21 @@ def upload_audio_chunk(chat_session_id, session_id):
     # Initialize processing functions if first chunk
     if not hasattr(upload_audio_chunk, "noise_profile"):
         upload_audio_chunk.noise_profile = None
+        upload_audio_chunk.prev_chunk = None
+    
+    # If we have a previous chunk stored, prepend it to create overlap for smoother processing
+    if upload_audio_chunk.prev_chunk is not None and len(upload_audio_chunk.prev_chunk) > 0:
+        # Use overlap of 25% of the previous chunk for smooth transitions
+        overlap_size = len(upload_audio_chunk.prev_chunk) // 4
+        if overlap_size > 0:
+            overlap = upload_audio_chunk.prev_chunk[-overlap_size:]
+            audio_normalized = np.concatenate([overlap, audio_normalized])
+            print(f"Added {overlap_size} samples of overlap from previous chunk")
     
     # Apply preprocessing pipeline
     has_speech, processed_audio = simple_vad(audio_normalized, threshold=0.015)
     
-    # Always store the original audio data in the buffer, even if no speech is detected
+    # Always store the original audio data in the buffer
     if sessions[session_id]["audio_buffer"] is not None:
         print(f"Existing audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
         sessions[session_id]["audio_buffer"] = sessions[session_id]["audio_buffer"] + audio_data
@@ -256,13 +269,10 @@ def upload_audio_chunk(chat_session_id, session_id):
         print(f"Initializing audio buffer with original audio: {len(audio_data)} bytes")
         sessions[session_id]["audio_buffer"] = audio_data
     
-    # Process audio for noise reduction regardless of speech detection
-    # This ensures we have processed audio for all chunks
-    processed_audio = audio_normalized  # Default to original if no speech detected
-    
-    if has_speech and processed_audio is not None:
-        processed_audio = automatic_gain_control(processed_audio)
+    # Process audio for noise reduction
+    if processed_audio is not None:
         try:
+            processed_audio = automatic_gain_control(processed_audio)
             processed_audio = adaptive_noise_reduction(processed_audio, 
                                                    noise_profile=upload_audio_chunk.noise_profile)
             upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
@@ -271,13 +281,22 @@ def upload_audio_chunk(chat_session_id, session_id):
             print(f"Error during audio processing: {str(e)}")
             # Fall back to original audio if processing fails
             processed_audio = audio_normalized
+    else:
+        processed_audio = audio_normalized
+    
+    # Store the end of this chunk for use with the next chunk (for smooth transitions)
+    store_size = min(4000, len(audio_normalized))  # Store up to 250ms at 16kHz
+    upload_audio_chunk.prev_chunk = audio_normalized[-store_size:].copy()
+    
+    # If we added overlap from the previous chunk, remove it from the processed audio
+    if upload_audio_chunk.prev_chunk is not None and 'overlap_size' in locals() and overlap_size > 0:
+        processed_audio = processed_audio[overlap_size:]
     
     # Convert back to int16 for storage
     processed_int16 = (processed_audio * 32768).astype(np.int16)
     processed_bytes = processed_int16.tobytes()
     
     # Always save processed audio to file, regardless of speech detection
-    # Also save processed audio to a separate file for testing
     if not sessions[session_id].get("processed_audio_path"):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         processed_filename = f"{SAMPLES_DIR}/processed_{session_id}_{timestamp}.wav"
