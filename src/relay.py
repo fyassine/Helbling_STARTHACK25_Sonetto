@@ -31,7 +31,7 @@ from memory_module.db import get_customer_profile, update_customer_data
 from memory_module.recommender import recommend
 
 load_dotenv()
-AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
+AZURE_SPEECH_KEY=os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = "switzerlandnorth"
 client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -445,32 +445,37 @@ def close_session(chat_session_id, session_id):
             # Use processed audio file if available, otherwise fall back to audio buffer
             processed_audio_path = sessions[session_id].get("processed_audio_path")
 
-            # azure
-            from diarizer import diarize_text
-
-            = diarize_text()
+            # Use pick_relevant_speaker from diarizer.py to get the speaker who is talking to us
+            from diarizer import pick_relevant_speaker
 
             if processed_audio_path and os.path.exists(processed_audio_path):
-                print(f"Using processed audio file for transcription: {processed_audio_path}")
-                text = transcribe_whisper(processed_audio_path)
-            else:
-                print("Processed audio file not available, using raw audio buffer")
-                text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+                print(f"Using processed audio file for speaker diarization: {processed_audio_path}")
+                # Call pick_relevant_speaker with the processed audio path and session_id
+                relevant_speaker = pick_relevant_speaker(processed_audio_path, session_id)
                 
-            # # send transcription
-            # ws = sessions[session_id].get("websocket")
-            # if ws:
-            #     message = {
-            #         "event": "recognized",
-            #         "text": text,
-            #         "language": sessions[session_id]["language"]
-            #     }
-            #     ws.send(json.dumps(message))
+                # Store the relevant speaker information in the session
+                if relevant_speaker:
+                    sessions[session_id]["relevant_speaker"] = relevant_speaker
+                    print(f"Relevant speaker identified and stored in session")
+                
+                # Get the websocket to send the transcription back to the client
+                ws = sessions[session_id].get("websocket")
+                if ws and relevant_speaker:
+                    # The pick_relevant_speaker function already sends the message via websocket
+                    # We don't need to send it again here
+                    print(f"Relevant speaker identified and message sent via websocket")
+            else:
+                print("Processed audio file not available, cannot perform speaker diarization")
+        except Exception as e:
+            print(f"Error during speaker diarization: {str(e)}")
 
     
     # Get file paths before removing session
     original_audio_path = sessions[session_id].get("original_audio_path")
     processed_audio_path = sessions[session_id].get("processed_audio_path")
+    
+    # Store the relevant speaker information if it was found
+    relevant_speaker_info = sessions[session_id].get("relevant_speaker")
     
     # Handle None values
     if original_audio_path is None:
@@ -486,12 +491,18 @@ def close_session(chat_session_id, session_id):
     # Remove from session store
     sessions.pop(session_id, None)
 
-    return jsonify({
+    response = {
         "status": "session_closed",
         "original_audio": original_audio,
         "processed_audio": processed_audio,
         "message": "Audio files can be accessed at /samples/{filename}"
-    })
+    }
+    
+    # Add relevant speaker information if available
+    if relevant_speaker_info:
+        response["relevant_speaker"] = relevant_speaker_info
+        
+    return jsonify(response)
 
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
