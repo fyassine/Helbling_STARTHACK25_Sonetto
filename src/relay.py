@@ -1,19 +1,23 @@
 import uuid
 import json
 import os
+import azure.cognitiveservices.speech as speechsdk
+import numpy as np
+import soundfile as sf
+import io
+import tempfile
+import time
 
 from flask import Flask, request, jsonify
-import azure.cognitiveservices.speech as speechsdk
 from flask_sock import Sock
 from flask_cors import CORS
 from flasgger import Swagger
 
 from groq import Groq
 from dotenv import load_dotenv
-import io
 
 load_dotenv()
-AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
+AZURE_SPEECH_KEY = os.environ.get("AZURE_SPEECH_KEY")
 AZURE_SPEECH_REGION = "switzerlandnorth"
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -218,25 +222,149 @@ def close_session(chat_session_id, session_id):
         return jsonify({"error": "Session not found"}), 404
 
     if sessions[session_id]["audio_buffer"] is not None:
-        # TODO preprocess audio/text, extract and save speaker identification
-
-        text = transcribe_whisper(sessions[session_id]["audio_buffer"])
-        # send transcription
-        ws = sessions[session_id].get("websocket")
-        if ws:
-          message = {
-              "event": "recognized",
-              "text": text,
-              "language": sessions[session_id]["language"]
-          }
-          ws.send(json.dumps(message))
+        # Process audio for speaker diarization
+        audio = sessions[session_id]["audio_buffer"]
+        
+        # Convert audio buffer to WAV format for Azure Speech SDK
+        audio_data = np.frombuffer(audio, dtype=np.int16)
+        
+        temp_dir = tempfile.gettempdir()
+        temp_file = os.path.join(temp_dir, f"audio_{session_id}.wav")
+        
+        sf.write(temp_file, audio_data, 16000, format='WAV')
+        
+        try:
+            # Initialize Azure Speech config
+            speech_config = speechsdk.SpeechConfig(subscription=AZURE_SPEECH_KEY, region=AZURE_SPEECH_REGION)
+            print(f"Using Azure Speech Service with region: {AZURE_SPEECH_REGION}")
+            
+            # Create audio config from the temporary file
+            audio_config = speechsdk.audio.AudioConfig(filename=temp_file)
+            
+            # Create speech recognizer
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+                language=sessions[session_id]["language"]
+            )
+            
+            # Dictionary to store speaker-specific transcriptions
+            speaker_transcriptions = {}
+            done = False
+            
+            def handle_result(evt):
+                nonlocal done
+                if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                    speaker_id = f"speaker_{len(speaker_transcriptions) + 1}"
+                    if speaker_id not in speaker_transcriptions:
+                        speaker_transcriptions[speaker_id] = []
+                    speaker_transcriptions[speaker_id].append(evt.result.text)
+                    print(f"Speaker {speaker_id}: {evt.result.text}")
+                elif evt.result.reason == speechsdk.ResultReason.NoMatch:
+                    print(f"No speech could be recognized: {evt.result.no_match_details}")
+                elif evt.result.reason == speechsdk.ResultReason.Canceled:
+                    cancellation_details = evt.result.cancellation_details
+                    print(f"Speech Recognition canceled: {cancellation_details.reason}")
+                    if cancellation_details.reason == speechsdk.CancellationReason.Error:
+                        print(f"Error details: {cancellation_details.error_details}")
+                done = True
+            
+            # Subscribe to events
+            recognizer.recognized.connect(handle_result)
+            recognizer.canceled.connect(handle_result)
+            
+            # Start recognition
+            print("Starting continuous recognition...")
+            recognizer.start_continuous_recognition()
+            
+            # Wait for recognition to complete
+            timeout = 10  # 10 seconds timeout
+            start_time = time.time()
+            
+            while not done and (time.time() - start_time) < timeout:
+                time.sleep(0.5)
+            
+            # Ensure recognition is properly stopped
+            print("Stopping recognition...")
+            recognizer.stop_continuous_recognition()
+            recognizer = None  # Release the recognizer
+            
+            # Format results and identify food ordering speaker
+            diarized_text = []
+            food_ordering_speaker = None
+            
+            # Analyze each speaker's text for food ordering context
+            for speaker_id, texts in speaker_transcriptions.items():
+                combined_text = " ".join(texts)
+                
+                # Use Groq to analyze if this speaker is ordering food
+                prompt = f"""Analyze this text and determine if the speaker is ordering food. 
+                Return a JSON with two fields:
+                - is_ordering_food (boolean): true if the speaker is clearly ordering food
+                - order_details (string): if is_ordering_food is true, extract the order details
+                
+                Text to analyze: {combined_text}"""
+                
+                try:
+                    completion = client.chat.completions.create(
+                        messages=[{"role": "user", "content": prompt}],
+                        model="mixtral-8x7b-32768",
+                        temperature=0.1,
+                    )
+                    analysis = json.loads(completion.choices[0].message.content)
+                    
+                    speaker_entry = {
+                        "speaker_id": speaker_id,
+                        "text": combined_text,
+                        "is_ordering_food": analysis.get("is_ordering_food", False),
+                        "order_details": analysis.get("order_details", "")
+                    }
+                    
+                    if analysis.get("is_ordering_food", False):
+                        food_ordering_speaker = speaker_entry
+                    
+                    diarized_text.append(speaker_entry)
+                    print(f"Speaker {speaker_id}: {speaker_entry}")
+                    
+                except Exception as e:
+                    print(f"Error analyzing speaker {speaker_id}: {str(e)}")
+                    diarized_text.append({
+                        "speaker_id": speaker_id,
+                        "text": combined_text,
+                        "is_ordering_food": False,
+                        "order_details": ""
+                    })
+            
+            # send transcription with speaker information and food ordering context
+            ws = sessions[session_id].get("websocket")
+            if ws:
+                message = {
+                    "event": "recognized",
+                    "diarized_text": diarized_text,
+                    "food_ordering_speaker": food_ordering_speaker,
+                    "language": sessions[session_id]["language"]
+                }
+                ws.send(json.dumps(message))
+                
+        except Exception as e:
+            print(f"Error during speech recognition: {str(e)}")
+            return jsonify({"error": f"Speech recognition error: {str(e)}"}), 500
+            
+        finally:
+            # Clean up the temporary file
+            try:
+                # Give some time for the file handle to be released
+                time.sleep(1)
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception as e:
+                print(f"Error removing temporary file: {e}")
+        
+        # Remove from session store
+        sessions.pop(session_id, None)
+        
+        return jsonify({"status": "session_closed", "diarized_text": diarized_text})
     
-    # # Remove from session store
-    sessions.pop(session_id, None)
-
-    return jsonify({"status": "session_closed"})
-
-
 @sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
 def speech_socket(ws, chat_session_id, session_id):
     """
@@ -280,7 +408,7 @@ def speech_socket(ws, chat_session_id, session_id):
         msg = ws.receive()
         if msg is None:
             break
-
+              
 @app.route('/chats/<chat_session_id>/set-memories', methods=['POST'])
 def set_memories(chat_session_id):
     """
@@ -367,4 +495,3 @@ def get_memories(chat_session_id):
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
     app.run(debug=True, host="0.0.0.0", port=8098)
-    
