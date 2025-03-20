@@ -18,6 +18,7 @@ load_dotenv()
 
 # Get API key from environment
 api_key = os.getenv("AZURE_SPEECH_KEY")
+
 if not api_key:
     print("❌ AZURE_SPEECH_KEY not found in .env file!")
     exit(1)
@@ -52,4 +53,5 @@ for combo in combinations:
             print(f"Position {pos}: Changed to '{char}'")
         exit(0)
 
+# No working combination found
 print("\n❌ No working combination found.")
