@@ -19,7 +19,7 @@ import groq
 from pathlib import Path
 
 # Import preprocessing functions
-from preprocess import (
+from audio_processing.preprocess import (
     simple_vad, 
     automatic_gain_control, 
     adaptive_noise_reduction, 
