@@ -308,7 +308,7 @@ def close_session(chat_session_id, session_id):
                 try:
                     completion = client.chat.completions.create(
                         messages=[{"role": "user", "content": prompt}],
-                        model="gpt-4o",
+                        model="mixtral-8x7b-32768",
                         temperature=0.1,
                     )
                     analysis = json.loads(completion.choices[0].message.content)
@@ -320,12 +320,13 @@ def close_session(chat_session_id, session_id):
                         "order_details": analysis.get("order_details", "")
                     }
                     
+                                       
+                    # diarized_text.append(speaker_entry)
+                    print(f"Speaker {speaker_id}: {speaker_entry}")
+                    
                     if analysis.get("is_ordering_food", False):
                         food_ordering_speaker = speaker_entry
                         break
-                    
-                    # diarized_text.append(speaker_entry)
-                    print(f"Speaker {speaker_id}: {speaker_entry}")
                     
                 except Exception as e:
                     print(f"Error analyzing speaker {speaker_id}: {str(e)}")
