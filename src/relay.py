@@ -26,6 +26,10 @@ from audio_processing.preprocess import (
     spectral_enhancement
 )
 
+from memory_module.summarize import summarize_conversation
+from memory_module.db import get_customer_profile, update_customer_data
+from memory_module.recommender import recommend
+
 load_dotenv()
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
@@ -48,6 +52,8 @@ cors = CORS(app)
 swagger = Swagger(app)
 
 sessions = {}
+
+last_message = ""
 
 # Create a directory to store processed audio samples
 SAMPLES_DIR = Path("processed_samples")
@@ -530,8 +536,12 @@ def set_memories(chat_session_id):
     chat_history = request.get_json()
     
     # TODO preprocess data (chat history & system message)
-    
-    print(f"{chat_session_id} extracting memories for conversation a:{chat_history[-1]['text']}")
+    speaker_chats = [item for item in chat_history if item['type'] == 0]
+    last_message = speaker_chats[-1]['text']
+    print(f"[SET MEMORIES] Last message is: {last_message}")
+    customer_data = get_customer_profile('Ahmed')
+    new_data = summarize_conversation(last_message, customer_data)
+    update_customer_data('Ahmed', new_data)
 
     return jsonify({"success": "1"})
 
@@ -566,7 +576,7 @@ def get_memories(chat_session_id):
     print(f"{chat_session_id}: replacing memories...")
 
     # TODO load relevant memories from your database. Example return value:
-    return jsonify({"memories": "The guest typically orders menu 1 and a glass of sparkling water."})
+    return jsonify({"memories":f"{recommend(last_input=last_message, customer_data=get_customer_profile('Ahmed'))}"})
 
 # Add an endpoint to retrieve the audio files
 @app.route("/samples/<filename>", methods=["GET"])
