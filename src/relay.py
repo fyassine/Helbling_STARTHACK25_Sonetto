@@ -284,11 +284,16 @@ def upload_audio_chunk(chat_session_id, session_id):
     # Process audio for noise reduction
     if processed_audio is not None:
         try:
+            # Keep track of if this is the first or last chunk
+            is_first_chunk = not sessions[session_id].get("processed_audio_path")
+            
             processed_audio = automatic_gain_control(processed_audio)
             processed_audio = adaptive_noise_reduction(processed_audio, 
                                                    noise_profile=upload_audio_chunk.noise_profile)
             upload_audio_chunk.noise_profile = adaptive_noise_reduction.noise_profile
             processed_audio = spectral_enhancement(processed_audio)
+            
+            # No silence buffer added to regular chunks to avoid choppiness
         except Exception as e:
             print(f"Error during audio processing: {str(e)}")
             # Fall back to original audio if processing fails
@@ -405,6 +410,28 @@ def close_session(chat_session_id, session_id):
     # Process final audio buffer
     if sessions[session_id]["audio_buffer"] is not None:
         print(f"Final audio buffer size: {len(sessions[session_id]['audio_buffer'])} bytes")
+        
+        # Add a tail buffer to the final processed audio file to prevent voice cutoff
+        processed_audio_path = sessions[session_id].get("processed_audio_path")
+        if processed_audio_path:
+            try:
+                # Read the processed audio file
+                with wave.open(processed_audio_path, 'rb') as wf:
+                    params = wf.getparams()
+                    existing_audio = wf.readframes(wf.getnframes())
+                
+                # Add a 0.5 second silence buffer at the end
+                tail_buffer_size = int(0.5 * 16000)  # 500ms at 16kHz
+                tail_buffer = np.zeros(tail_buffer_size, dtype=np.int16).tobytes()
+                
+                # Write combined audio with tail buffer
+                with wave.open(processed_audio_path, 'wb') as wf:
+                    wf.setparams(params)
+                    wf.writeframes(existing_audio + tail_buffer)
+                    print(f"Added final tail buffer of {tail_buffer_size} samples to processed audio")
+            except Exception as e:
+                print(f"Error adding tail buffer: {str(e)}")
+        
         try:
             text = transcribe_whisper(sessions[session_id]["audio_buffer"])
             # send transcription
