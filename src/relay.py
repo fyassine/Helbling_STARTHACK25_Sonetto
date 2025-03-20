@@ -78,9 +78,18 @@ def ensure_session_fields(session_data):
     return session_data
 
 def transcribe_whisper(audio_recording):
-    audio_file = io.BytesIO(audio_recording)
-    audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
     try:
+        # Check if input is a file path or raw audio data
+        if isinstance(audio_recording, str) and os.path.exists(audio_recording):
+            # Input is a file path
+            with open(audio_recording, 'rb') as f:
+                audio_file = io.BytesIO(f.read())
+                audio_file.name = os.path.basename(audio_recording)
+        else:
+            # Input is raw audio data
+            audio_file = io.BytesIO(audio_recording)
+            audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
+            
         transcription = client.audio.transcriptions.create(
             model="whisper-large-v3",
             file=audio_file,
@@ -433,7 +442,15 @@ def close_session(chat_session_id, session_id):
                 print(f"Error adding tail buffer: {str(e)}")
         
         try:
-            text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+            # Use processed audio file if available, otherwise fall back to audio buffer
+            processed_audio_path = sessions[session_id].get("processed_audio_path")
+            if processed_audio_path and os.path.exists(processed_audio_path):
+                print(f"Using processed audio file for transcription: {processed_audio_path}")
+                text = transcribe_whisper(processed_audio_path)
+            else:
+                print("Processed audio file not available, using raw audio buffer")
+                text = transcribe_whisper(sessions[session_id]["audio_buffer"])
+                
             # send transcription
             ws = sessions[session_id].get("websocket")
             if ws:
