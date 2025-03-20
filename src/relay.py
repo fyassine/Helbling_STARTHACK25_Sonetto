@@ -444,6 +444,12 @@ def close_session(chat_session_id, session_id):
         try:
             # Use processed audio file if available, otherwise fall back to audio buffer
             processed_audio_path = sessions[session_id].get("processed_audio_path")
+
+            # azure
+            from diarizer import diarize_text
+
+            = diarize_text()
+
             if processed_audio_path and os.path.exists(processed_audio_path):
                 print(f"Using processed audio file for transcription: {processed_audio_path}")
                 text = transcribe_whisper(processed_audio_path)
@@ -451,18 +457,16 @@ def close_session(chat_session_id, session_id):
                 print("Processed audio file not available, using raw audio buffer")
                 text = transcribe_whisper(sessions[session_id]["audio_buffer"])
                 
-            # send transcription
-            ws = sessions[session_id].get("websocket")
-            if ws:
-                message = {
-                    "event": "recognized",
-                    "text": text,
-                    "language": sessions[session_id]["language"]
-                }
-                ws.send(json.dumps(message))
-        except Exception as e:
-            print(f"Error during transcription: {str(e)}")
-            # Continue with session closing even if transcription fails
+            # # send transcription
+            # ws = sessions[session_id].get("websocket")
+            # if ws:
+            #     message = {
+            #         "event": "recognized",
+            #         "text": text,
+            #         "language": sessions[session_id]["language"]
+            #     }
+            #     ws.send(json.dumps(message))
+
     
     # Get file paths before removing session
     original_audio_path = sessions[session_id].get("original_audio_path")
