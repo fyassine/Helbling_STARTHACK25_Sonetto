@@ -226,6 +226,19 @@ files = [
 ]
 
 [[package]]
+name = "dotenv"
+version = "0.9.9"
+description = "Deprecated package"
+optional = false
+python-versions = "*"
+files = [
+    {file = "dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9"},
+]
+
+[package.dependencies]
+python-dotenv = "*"
+
+[[package]]
 name = "flasgger"
 version = "0.9.7.1"
 description = "Extract swagger specs from your flask project"
@@ -1240,4 +1253,4 @@ h11 = ">=0.9.0,<1"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "91aaea6d752ac762610c827d677812ac822103716eb30bb16e05a08f6fabdf7e"
+content-hash = "e84f72062a8227a9b7595bf8aaa0e85ed454cc9cf8423f059234a6771485c4d7"

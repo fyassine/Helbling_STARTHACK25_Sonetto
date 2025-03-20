@@ -19,6 +19,7 @@ groq="*"
 python-dotenv="*"
 numpy = "^1.26.0"
 scipy = "^1.14.0"
+dotenv="*"
 
 
 [build-system]
