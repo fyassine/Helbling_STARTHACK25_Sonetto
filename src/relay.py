@@ -15,8 +15,12 @@ import io
 import wave
 import numpy as np
 from datetime import datetime
-import groq
+from openai import OpenAI
 from pathlib import Path
+
+from memory_module.recommender import *
+from memory_module.db import *
+from memory_module.summarize import *
 
 # Import preprocessing functions
 from audio_processing.preprocess import (
@@ -29,7 +33,7 @@ from audio_processing.preprocess import (
 load_dotenv()
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
-client = groq.Groq(api_key=os.environ.get("GROQ_API_KEY"))
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Handle HTTP requests & responses
 app = Flask(__name__) 
@@ -80,7 +84,7 @@ def transcribe_whisper(audio_recording):
     audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
     try:
         transcription = client.audio.transcriptions.create(
-            model="whisper-large-v3",
+            model="whisper-1",
             file=audio_file,
             #language = ""  # specify Language explicitly
         )
@@ -615,4 +619,4 @@ def get_audio_sample(filename):
 
 if __name__ == "__main__":
     # In production, you would use a real WSGI server like gunicorn/uwsgi
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=8089)

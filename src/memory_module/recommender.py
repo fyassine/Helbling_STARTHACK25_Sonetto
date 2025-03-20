@@ -6,8 +6,8 @@ from groq import Groq
 from memory_module.db import update_customer_data, get_customer_profile
 
 load_dotenv()
-# client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 def recommend(last_input, customer_data):
     # prompt = f"""
@@ -35,7 +35,7 @@ def recommend(last_input, customer_data):
     where MEMORY is the a simple short string describing the customer data combined with the last input
     """
 
-    response = client.chat.completions.create(model="llama-3.3-70b-versatile",  # or "gpt-4" if available
+    response = client.chat.completions.create(model="gpt-4o",  # or "gpt-4" if available
     messages=[
         {"role": "system", "content": "You summarize restaurant customer interactions concisely."},
         {"role": "user", "content": prompt}
