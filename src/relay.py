@@ -308,7 +308,7 @@ def close_session(chat_session_id, session_id):
                 try:
                     completion = client.chat.completions.create(
                         messages=[{"role": "user", "content": prompt}],
-                        model="mixtral-8x7b-32768",
+                        model="gpt-4o",
                         temperature=0.1,
                     )
                     analysis = json.loads(completion.choices[0].message.content)
@@ -322,18 +322,19 @@ def close_session(chat_session_id, session_id):
                     
                     if analysis.get("is_ordering_food", False):
                         food_ordering_speaker = speaker_entry
+                        break
                     
-                    diarized_text.append(speaker_entry)
+                    # diarized_text.append(speaker_entry)
                     print(f"Speaker {speaker_id}: {speaker_entry}")
                     
                 except Exception as e:
                     print(f"Error analyzing speaker {speaker_id}: {str(e)}")
-                    diarized_text.append({
-                        "speaker_id": speaker_id,
-                        "text": combined_text,
-                        "is_ordering_food": False,
-                        "order_details": ""
-                    })
+                    # diarized_text.append({
+                    #     "speaker_id": speaker_id,
+                    #     "text": combined_text,
+                    #     "is_ordering_food": False,
+                    #     "order_details": ""
+                    # })
             
             # send transcription with speaker information and food ordering context
             ws = sessions[session_id].get("websocket")
